@@ -25,6 +25,12 @@ export interface CrashIssue {
   userCount: string | null;
   /** App version range the issue was seen in, e.g. "1.0 – 1.0" (`cdk-column-versions`). */
   versionRange: string | null;
+  /** True if Crashlytics is showing its "New issue" badge on this row (a `fire-chip` with
+   *  class `is-freshness` — the class name is a stable, English hook for what displays as
+   *  "Novo problema" on this project's Portuguese console). Firebase flags an issue this
+   *  way for a while after its first-ever event; it clears on its own over time, it isn't
+   *  something this crawler can reset. */
+  newIssue: boolean;
   /**
    * Best-effort only: the Trends column is a canvas-rendered sparkline chart, not text, so
    * there's no way to read its actual per-day series. This is just the value range pulled
@@ -191,6 +197,7 @@ export async function scrapeIssues(page: Page): Promise<CrashIssue[]> {
     const userCount = await readColumnCell(row, "cdk-column-userCount");
     const versionRange = await readColumnCell(row, "cdk-column-versions");
     const trendRange = await readTrendRange(row);
+    const newIssue = (await cell.locator('[data-test-id="signals"] .is-freshness').count()) > 0;
 
     if (!title && !rowText) continue;
     issues.push({
@@ -201,6 +208,7 @@ export async function scrapeIssues(page: Page): Promise<CrashIssue[]> {
       userCount,
       versionRange,
       trendRange,
+      newIssue,
       rowText,
     });
   }

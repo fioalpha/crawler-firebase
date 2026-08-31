@@ -32,6 +32,7 @@ Each entry in `issues` is a `CrashIssue` (full field docs on the type itself, in
 | `userCount` | `string \| null` | Distinct affected users, same caveats as `eventCount` |
 | `versionRange` | `string \| null` | App version range the issue was seen in, e.g. `"1.0 – 1.0"` |
 | `trendRange` | `string \| null` | Best-effort only — the Trends column is a canvas chart, not text; this is just its y-axis min–max, not the real per-day series |
+| `newIssue` | `boolean` | Whether Crashlytics is showing its "New issue" badge on this row (clears on its own over time; not something this crawler controls) |
 | `rowText` | `string` | Raw, uncleaned text of the row — fallback if a structured field above ever comes back unexpectedly `null` |
 | `stackTrace` | `string \| undefined` | Parsed stack trace from the issue's detail page, icon-font noise stripped |
 
