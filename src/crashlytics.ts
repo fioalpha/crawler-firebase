@@ -6,21 +6,41 @@ export interface CrashFreeMetrics {
 }
 
 export interface CrashIssue {
+  /** The issue's title, usually `<Class>.<method>` — e.g. "MainActivity.onCreate". */
   title: string;
+  /** The exception type shown under the title, e.g. "java.lang.Exception". `null` if the
+   *  row had no subtitle element (rare, but the DOM doesn't guarantee one). */
   subtitle: string | null;
+  /** Deep link straight to this issue's detail page. `null` until `openIssueByIndex` has
+   *  actually visited it — issue rows have no real href to read this from up front (see
+   *  `scrapeIssues`'s doc comment), so this is only filled in as a side effect of scraping
+   *  the stack trace, never populated by `scrapeIssues` alone. */
   url: string | null;
+  /** Number of crash events for this issue in the dashboard's current time window, as
+   *  Crashlytics displays it (e.g. "3"). Read from the table's `cdk-column-eventCount`
+   *  cell — a raw string, not parsed to a number, in case Crashlytics ever formats large
+   *  counts (e.g. "1.2K"). */
   eventCount: string | null;
+  /** Number of distinct users affected, same caveats as `eventCount` (`cdk-column-userCount`). */
   userCount: string | null;
+  /** App version range the issue was seen in, e.g. "1.0 – 1.0" (`cdk-column-versions`). */
   versionRange: string | null;
   /**
    * Best-effort only: the Trends column is a canvas-rendered sparkline chart, not text, so
    * there's no way to read its actual per-day series. This is just the value range pulled
-   * out of the chart's screen-reader description (e.g. "0 to 2"), when Firebase provides one.
+   * out of the chart's screen-reader description (e.g. "0–3"), when Firebase provides one —
+   * it's the y-axis min/max, not a summary of the trend's shape (rising/falling/flat).
    */
   trendRange: string | null;
   /** Raw text of the row's title cell (crash type, package, blamed file, tags, etc.) —
-   *  kept whole because Crashlytics doesn't label most of it with anything selector-friendly. */
+   *  kept whole because Crashlytics doesn't label most of it with anything selector-friendly.
+   *  Useful as a fallback/debugging aid if one of the structured fields above comes back
+   *  `null` on a row shape this hasn't been tested against. */
   rowText: string;
+  /** The parsed stack trace text (exception, causal chain, file:line frames) from the
+   *  issue's detail page, with Material icon-font noise stripped. `undefined` until
+   *  `openIssueByIndex` has visited the issue, or if no stack trace section was found for
+   *  it (see the `stack-trace-not-found_*` debug dump in that case). */
   stackTrace?: string;
 }
 

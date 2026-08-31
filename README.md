@@ -1,21 +1,39 @@
 # crawler-firebase
 
 Browser-automation crawler that logs into the Firebase console, opens a project's
-Crashlytics dashboard, and scrapes:
+Crashlytics dashboard, and scrapes crash-free users/sessions percentages plus the issues
+list (including each issue's stack trace). Results are written as a timestamped JSON file
+under `output/`.
 
-- Crash-free users / crash-free sessions percentages
-- The issues list, one object per issue:
-  - `title`, `subtitle` (exception type)
-  - `eventCount`, `userCount`, `versionRange` — read straight from the table's own
-    `cdk-column-eventCount`/`cdk-column-userCount`/`cdk-column-versions` cells
-  - `trendRange` — best-effort only: the Trends column is a canvas-rendered sparkline
-    chart, not text, so this is just the value range pulled from the chart's
-    accessibility description (e.g. `"0–3"`), not the real per-day series
-  - `url`, `stackTrace` — from visiting the issue (see below)
-  - `rowText` — the raw, uncleaned text of the row's title cell, kept as a fallback
-- The stack trace for each issue
+## Output shape
 
-Results are written as a timestamped JSON file under `output/`.
+```json
+{
+  "crawledAt": "2026-08-31T01:56:21.202Z",
+  "projectId": "netchurros",
+  "crashFreeMetrics": { "<label as shown on the dashboard>": "<value as shown, e.g. \"99.8%\" or \"- - -\">" },
+  "issues": [ /* CrashIssue objects, shape below */ ]
+}
+```
+
+`crashFreeMetrics`'s keys are whatever label Crashlytics displays (e.g. Portuguese
+"Usuários que não tiveram falhas" on this project) — see `scrapeCrashFreeMetrics` in
+`src/crashlytics.ts` for why the keys are the raw label rather than a fixed one.
+
+Each entry in `issues` is a `CrashIssue` (full field docs on the type itself, in
+`src/crashlytics.ts`):
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `title` | `string` | Issue title, usually `<Class>.<method>` |
+| `subtitle` | `string \| null` | Exception type shown under the title |
+| `url` | `string \| null` | Deep link to the issue's detail page — `null` until it's been visited |
+| `eventCount` | `string \| null` | Crash event count in the dashboard's current time window, as displayed (unparsed) |
+| `userCount` | `string \| null` | Distinct affected users, same caveats as `eventCount` |
+| `versionRange` | `string \| null` | App version range the issue was seen in, e.g. `"1.0 – 1.0"` |
+| `trendRange` | `string \| null` | Best-effort only — the Trends column is a canvas chart, not text; this is just its y-axis min–max, not the real per-day series |
+| `rowText` | `string` | Raw, uncleaned text of the row — fallback if a structured field above ever comes back unexpectedly `null` |
+| `stackTrace` | `string \| undefined` | Parsed stack trace from the issue's detail page, icon-font noise stripped |
 
 ## Setup
 
