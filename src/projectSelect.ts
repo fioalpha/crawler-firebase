@@ -19,6 +19,9 @@ interface ProjectLink {
  */
 async function listVisibleProjects(page: Page): Promise<ProjectLink[]> {
   const links = page.locator(`a[href*="/project/"]`);
+  // The picker's own network traffic goes idle before the project list actually renders
+  // (it loads asynchronously below the "Welcome" section) — wait for a real link first.
+  await links.first().waitFor({ state: "visible", timeout: 15_000 }).catch(() => {});
   const count = await links.count();
   const seen = new Map<string, string>();
 
@@ -49,7 +52,7 @@ export async function resolveProjectId(page: Page, forceReselect: boolean): Prom
     return state.projectId;
   }
 
-  await page.goto(FIREBASE_CONSOLE_URL, { waitUntil: "networkidle" });
+  await page.goto(FIREBASE_CONSOLE_URL, { waitUntil: "domcontentloaded" });
 
   const projects = await listVisibleProjects(page);
   if (projects.length === 0) {

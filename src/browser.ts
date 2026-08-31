@@ -10,7 +10,18 @@ import { BROWSER_PROFILE_DIR } from "./config.js";
  */
 export async function launchBrowser(): Promise<BrowserContext> {
   return chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
+    channel: 'chrome',
     headless: false,
     viewport: { width: 1440, height: 900 },
+    args: [
+        // '--disable-blink-features=AutomationControlled',
+        // '--no-sandbox',
+        // '--disable-web-security',
+        // '--disable-infobars',
+        // '--disable-extensions',
+        // '--start-maximized',
+        // '--window-size=1280,720',
+    ],
+    // args: [ "--disable-blink-features=AutomationControlled" ],
   });
 }

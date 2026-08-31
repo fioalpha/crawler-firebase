@@ -10,6 +10,12 @@ const args = new Set(process.argv.slice(2));
 const loginOnly = args.has("--login-only");
 const resetProject = args.has("--reset-project");
 
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+
 async function main() {
   const context = await launchBrowser();
   const page = context.pages()[0] ?? (await context.newPage());
@@ -20,6 +26,9 @@ async function main() {
       console.log("Login confirmed. Session saved — future runs won't need this step.");
       return;
     }
+
+
+    // await sleep(100000);
 
     const projectId = await resolveProjectId(page, resetProject);
 

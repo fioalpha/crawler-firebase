@@ -16,40 +16,58 @@ export interface CrashIssue {
 
 /**
  * Opens the given project's overview, then does literally what was asked: finds the
- * "Crashlytics" entry in the console's left nav and clicks it. Firebase nav items render
- * as links or buttons depending on the section, so both roles are tried.
+ * "Crashlytics" entry in the console's left nav and clicks it. The nav renders its items
+ * as `<a href=".../<projectId>/crashlytics">`, which is a much less ambiguous target than
+ * matching on the word "Crashlytics" alone (that text also shows up elsewhere on the page,
+ * e.g. in the product catalog).
  */
 export async function openCrashlytics(page: Page, projectId: string): Promise<void> {
   await page.goto(`https://console.firebase.google.com/project/${projectId}/overview`, {
-    waitUntil: "networkidle",
+    waitUntil: "domcontentloaded",
   });
 
-  const candidates = [
-    page.getByRole("link", { name: /crashlytics/i }),
-    page.getByRole("button", { name: /crashlytics/i }),
-    page.getByText(/^crashlytics$/i),
-  ];
+  const navLink = page.locator(`a[href*="/${projectId}/crashlytics"]`).first();
 
-  for (const candidate of candidates) {
-    if (await candidate.first().isVisible().catch(() => false)) {
-      await candidate.first().click();
-      await page.waitForLoadState("networkidle");
-      return;
-    }
+  // The overview page's own network traffic goes idle well before Angular finishes
+  // hydrating the sidebar, so this waits for the link itself rather than for the network.
+  const found = await navLink
+    .waitFor({ state: "visible", timeout: 20_000 })
+    .then(() => true)
+    .catch(() => false);
+
+  if (!found) {
+    const dump = await dumpDebugState(page, "crashlytics-nav-not-found");
+    throw new Error(
+      `Couldn't find a "Crashlytics" nav item on the project overview page after 20s. ` +
+        `Dumped the page to ${dump}.* — check ${dump}.png. Firebase may have moved it ` +
+        `under a "Release & Monitor" submenu, or Crashlytics isn't set up for this project yet.`,
+    );
   }
 
-  const dump = await dumpDebugState(page, "crashlytics-nav-not-found");
-  throw new Error(
-    `Couldn't find a "Crashlytics" nav item on the project overview page. ` +
-      `Dumped the page to ${dump}.* — check ${dump}.png. Firebase may have moved it ` +
-      `under a "Release & Monitor" submenu, or Crashlytics isn't set up for this project yet.`,
-  );
+  await navLink.click();
+
+  // Confirm the click actually navigated (Firebase's URL updates to include /crashlytics),
+  // not just that the click event fired.
+  await page
+    .waitForURL((url) => url.toString().includes(`/${projectId}/crashlytics`), { timeout: 20_000 })
+    .catch(() => {});
+
+  // Give the Crashlytics dashboard's own async render (separate from page navigation) a
+  // window to finish before any scraping starts — this is the actual known-slow step.
+  await page
+    .getByText(/crash-free|no crashlytics data|get started with crashlytics|configure crashlytics/i)
+    .first()
+    .waitFor({ state: "visible", timeout: 20_000 })
+    .catch(() => {});
 }
 
 /** Scrapes the crash-free users/sessions stat cards on the Crashlytics dashboard. */
 export async function scrapeCrashFreeMetrics(page: Page): Promise<CrashFreeMetrics> {
   const metrics: CrashFreeMetrics = {};
   const labels = page.getByText(/crash-free (users|sessions)/i);
+  // .count() reads the DOM as it is right now, with no auto-wait — give the dashboard's
+  // async render a chance to land the stat cards before asking how many there are.
+  await labels.first().waitFor({ state: "visible", timeout: 15_000 }).catch(() => {});
   const count = await labels.count();
 
   for (let i = 0; i < count; i++) {
@@ -78,6 +96,7 @@ export async function scrapeCrashFreeMetrics(page: Page): Promise<CrashFreeMetri
 /** Scrapes the issues list/table on the Crashlytics dashboard. */
 export async function scrapeIssues(page: Page): Promise<CrashIssue[]> {
   const rows = page.locator(`a[href*="/issues/"]`);
+  await rows.first().waitFor({ state: "visible", timeout: 15_000 }).catch(() => {});
   const count = await rows.count();
   const issues: CrashIssue[] = [];
   const seenUrls = new Set<string>();
@@ -108,10 +127,14 @@ export async function scrapeIssues(page: Page): Promise<CrashIssue[]> {
 export async function scrapeStackTrace(page: Page, issue: CrashIssue): Promise<string | undefined> {
   if (!issue.url) return undefined;
 
-  await page.goto(issue.url, { waitUntil: "networkidle" });
+  await page.goto(issue.url, { waitUntil: "domcontentloaded" });
 
   const heading = page.getByText(/stack trace/i).first();
-  if (!(await heading.isVisible().catch(() => false))) {
+  const found = await heading
+    .waitFor({ state: "visible", timeout: 15_000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!found) {
     const dump = await dumpDebugState(page, `stack-trace-not-found_${sanitize(issue.title)}`);
     console.warn(
       `Warning: no "Stack trace" section found for issue "${issue.title}". Dumped to ${dump}.*`,
