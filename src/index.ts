@@ -3,7 +3,13 @@ import path from "node:path";
 import { launchBrowser } from "./browser.js";
 import { ensureLoggedIn } from "./login.js";
 import { resolveProjectId } from "./projectSelect.js";
-import { openCrashlytics, scrapeCrashFreeMetrics, scrapeIssues, openIssueByIndex } from "./crashlytics.js";
+import {
+  openCrashlytics,
+  filterToAnrOnly,
+  scrapeCrashFreeMetrics,
+  scrapeIssues,
+  openIssueByIndex,
+} from "./crashlytics.js";
 import { OUTPUT_DIR } from "./config.js";
 
 const args = new Set(process.argv.slice(2));
@@ -34,6 +40,9 @@ async function main() {
 
     console.log(`Opening Crashlytics for project "${projectId}"...`);
     await openCrashlytics(page, projectId);
+
+    console.log("Filtering to ANRs only...");
+    await filterToAnrOnly(page);
 
     console.log("Scraping crash-free metrics...");
     const crashFreeMetrics = await scrapeCrashFreeMetrics(page);

@@ -1,9 +1,12 @@
 # crawler-firebase
 
 Browser-automation crawler that logs into the Firebase console, opens a project's
-Crashlytics dashboard, and scrapes crash-free users/sessions percentages plus the issues
-list (including each issue's stack trace). Results are written as a timestamped JSON file
-under `output/`.
+Crashlytics dashboard, filters it to **ANRs only** (via the dashboard's own "Filtros" →
+"Tipo de evento" picker, deselecting Crashes), and scrapes the crash-free users/sessions
+percentages plus the issues list for that filter (including each issue's stack trace).
+Results are written as a timestamped JSON file under `output/`. A project with no ANRs in
+the current time window is a normal, expected result — `issues` just comes back `[]`, no
+warning.
 
 ## Output shape
 
@@ -99,7 +102,7 @@ step (or share it) so the corresponding selector in `src/crashlytics.ts` or
 - `src/browser.ts` — launches Chromium with a persistent profile (keeps the login session).
 - `src/login.ts` — detects whether Google login is needed and waits for it.
 - `src/projectSelect.ts` — lists/prompts for which Firebase project to crawl.
-- `src/crashlytics.ts` — clicks into Crashlytics and scrapes metrics/issues/stack traces.
+- `src/crashlytics.ts` — clicks into Crashlytics, applies the ANR filter, and scrapes metrics/issues/stack traces.
 - `src/debug.ts` — dumps page state whenever a selector doesn't find what it expects.
 - `src/state.ts` — persists the chosen project id between runs.
 - `src/index.ts` — orchestrates the above and writes the output JSON.

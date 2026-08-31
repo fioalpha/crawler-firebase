@@ -79,17 +79,21 @@ async function readTrendRange(row: Locator): Promise<string | null> {
 
 /**
  * Opens the given project's overview, then does literally what was asked: finds the
- * "Crashlytics" entry in the console's left nav and clicks it. The nav renders its items
- * as `<a href=".../<projectId>/crashlytics">`, which is a much less ambiguous target than
- * matching on the word "Crashlytics" alone (that text also shows up elsewhere on the page,
- * e.g. in the product catalog).
+ * "Crashlytics" entry in the console's left nav and clicks it. Targeted by
+ * `aria-label="Crashlytics"` rather than the link's href: Firebase doesn't translate its
+ * own product names, so this stays unambiguous and locale-safe (unlike matching the word
+ * "Crashlytics" as page text, which also shows up in the product catalog) — and unlike the
+ * href, which sometimes renders as a placeholder `href="#"` before Angular has resolved
+ * the real deep link (same as issue rows; see `scrapeIssues`'s doc comment), so matching on
+ * it isn't reliable. The click works either way — Angular's router intercepts it regardless
+ * of what's in href — confirmed below by waiting for the URL to actually change.
  */
 export async function openCrashlytics(page: Page, projectId: string): Promise<void> {
   await page.goto(`https://console.firebase.google.com/project/${projectId}/overview`, {
     waitUntil: "domcontentloaded",
   });
 
-  const navLink = page.locator(`a[href*="/${projectId}/crashlytics"]`).first();
+  const navLink = page.locator('a[aria-label="Crashlytics"]').first();
 
   // The overview page's own network traffic goes idle well before Angular finishes
   // hydrating the sidebar, so this waits for the link itself rather than for the network.
@@ -121,6 +125,78 @@ export async function openCrashlytics(page: Page, projectId: string): Promise<vo
   // (this project renders in Portuguese), so English text like "Crash-free" never
   // appears, but the <fire-big-tab-scorecard-header> element is always there regardless
   // of language and shows up even when there's no issue data yet.
+  await page
+    .locator("fire-big-tab-scorecard-header")
+    .first()
+    .waitFor({ state: "visible", timeout: 20_000 })
+    .catch(() => {});
+}
+
+/**
+ * Does literally what was asked: opens the "Filtros" (Filters) button, opens its "Event
+ * type" pane, and selects only "ANRs" — deselecting whatever else was checked (by
+ * default, a fresh dashboard has "Crashes" checked). "ANRs" is Google's own acronym and
+ * Firebase doesn't translate it, so matching on it is locale-safe, unlike the other
+ * filter labels here (Portuguese on this project).
+ *
+ * The Filters button is a `<fire-chip role="button">`, not a real `<button>`, but its
+ * explicit ARIA role makes it reachable the normal way via getByRole regardless.
+ */
+export async function filterToAnrOnly(page: Page): Promise<void> {
+  const filtersButton = page.getByRole("button", { name: /filtros|filters/i }).first();
+  await filtersButton.waitFor({ state: "visible", timeout: 15_000 });
+  await filtersButton.click();
+
+  // Scoped to the panel's own facet list, not just any "Event type" text on the page —
+  // the filter chip that shows the *currently applied* filter also reads "Tipo de evento
+  // = ..." and sits right behind this panel, so an unscoped match can click straight
+  // through the panel at the wrong element underneath it.
+  const eventTypeTab = page
+    .locator("fire-filter-picker-facets")
+    .getByRole("menuitem", { name: /tipo de evento|event type/i })
+    .first();
+  const foundTab = await eventTypeTab
+    .waitFor({ state: "visible", timeout: 10_000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!foundTab) {
+    const dump = await dumpDebugState(page, "anr-filter-event-type-tab-not-found");
+    throw new Error(
+      `Couldn't find the "Event type" tab in the filters panel. Dumped to ${dump}.* to inspect.`,
+    );
+  }
+  await eventTypeTab.click();
+
+  const anrCheckbox = page.locator('mat-checkbox[data-test-id="facet-ANRs"]');
+  const foundAnr = await anrCheckbox
+    .waitFor({ state: "visible", timeout: 10_000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!foundAnr) {
+    const dump = await dumpDebugState(page, "anr-filter-checkbox-not-found");
+    throw new Error(`Couldn't find the "ANRs" filter checkbox. Dumped to ${dump}.* to inspect.`);
+  }
+
+  if (!(await anrCheckbox.locator('input[type="checkbox"]').isChecked())) {
+    await anrCheckbox.click();
+  }
+
+  // Deselect every other event type so the result is ANRs only, not ANRs *plus* whatever
+  // was already checked.
+  const allCheckboxes = page.locator('mat-checkbox[data-test-id^="facet-"]');
+  const checkboxCount = await allCheckboxes.count();
+  for (let i = 0; i < checkboxCount; i++) {
+    const checkbox = allCheckboxes.nth(i);
+    if ((await checkbox.getAttribute("data-test-id")) === "facet-ANRs") continue;
+    if (await checkbox.locator('input[type="checkbox"]').isChecked()) {
+      await checkbox.click();
+    }
+  }
+
+  await page.getByRole("button", { name: /aplicar|apply/i }).click();
+
+  // Applying re-renders the whole dashboard (stat cards + issues table) — same
+  // async-render gap as everywhere else, so give it a moment before anything scrapes it.
   await page
     .locator("fire-big-tab-scorecard-header")
     .first()
@@ -169,7 +245,14 @@ export async function scrapeCrashFreeMetrics(page: Page): Promise<CrashFreeMetri
  */
 export async function scrapeIssues(page: Page): Promise<CrashIssue[]> {
   const titles = page.locator('[data-test-id="titleWrapper"]');
-  await titles.first().waitFor({ state: "visible", timeout: 15_000 }).catch(() => {});
+  // Firebase's own "no issues match the current filter" empty state — a real, expected
+  // outcome (e.g. filtering to ANRs on a project with no ANRs), not a scrape failure, so
+  // it's checked for below rather than treated the same as titles never showing up.
+  const zeroState = page.locator(".c9s-issues-table-zero-state");
+  await Promise.race([
+    titles.first().waitFor({ state: "visible", timeout: 15_000 }).catch(() => {}),
+    zeroState.first().waitFor({ state: "visible", timeout: 15_000 }).catch(() => {}),
+  ]);
   const count = await titles.count();
   const issues: CrashIssue[] = [];
 
@@ -214,8 +297,12 @@ export async function scrapeIssues(page: Page): Promise<CrashIssue[]> {
   }
 
   if (issues.length === 0) {
-    const dump = await dumpDebugState(page, "issues-list-not-found");
-    console.warn(`Warning: no issue rows found. Dumped page to ${dump}.* to inspect.`);
+    if (await zeroState.first().isVisible().catch(() => false)) {
+      console.log("No issues matched the current filter — nothing to scrape.");
+    } else {
+      const dump = await dumpDebugState(page, "issues-list-not-found");
+      console.warn(`Warning: no issue rows found. Dumped page to ${dump}.* to inspect.`);
+    }
   }
 
   return issues;
