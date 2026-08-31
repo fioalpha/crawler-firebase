@@ -3,7 +3,7 @@ import path from "node:path";
 import { launchBrowser } from "./browser.js";
 import { ensureLoggedIn } from "./login.js";
 import { resolveProjectId } from "./projectSelect.js";
-import { openCrashlytics, scrapeCrashFreeMetrics, scrapeIssues, scrapeStackTrace } from "./crashlytics.js";
+import { openCrashlytics, scrapeCrashFreeMetrics, scrapeIssues, openIssueByIndex } from "./crashlytics.js";
 import { OUTPUT_DIR } from "./config.js";
 
 const args = new Set(process.argv.slice(2));
@@ -42,11 +42,13 @@ async function main() {
     const issues = await scrapeIssues(page);
     console.log(`Found ${issues.length} issue(s). Pulling stack traces...`);
 
-    for (const issue of issues) {
-      issue.stackTrace = await scrapeStackTrace(page, issue);
-      // Crashlytics detail pages navigate the same tab away from the issues list,
-      // so head back before the next issue's link can be looked up again.
-      await page.goBack({ waitUntil: "networkidle" }).catch(() => {});
+    // Issue rows have no real href (Angular intercepts the click client-side), so each
+    // one is visited by index on the live page rather than by a saved URL — see
+    // openIssueByIndex for why, and why this only works against this same, unmodified list.
+    for (let i = 0; i < issues.length; i++) {
+      const { url, stackTrace } = await openIssueByIndex(page, i, issues[i].title);
+      issues[i].url = url;
+      issues[i].stackTrace = stackTrace;
     }
 
     const result = {
