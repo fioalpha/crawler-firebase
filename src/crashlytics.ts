@@ -133,16 +133,19 @@ export async function openCrashlytics(page: Page, projectId: string): Promise<vo
 }
 
 /**
- * Does literally what was asked: opens the "Filtros" (Filters) button, opens its "Event
- * type" pane, and selects only "ANRs" — deselecting whatever else was checked (by
- * default, a fresh dashboard has "Crashes" checked). "ANRs" is Google's own acronym and
- * Firebase doesn't translate it, so matching on it is locale-safe, unlike the other
- * filter labels here (Portuguese on this project).
+ * Opens the "Filtros" (Filters) button, opens its "Event type" pane, and checks/unchecks
+ * boxes so that exactly the one `isTarget` picks out ends up checked — everything else
+ * ends up unchecked. Shared by `filterToCrashesOnly`/`filterToAnrOnly` below; `label` is
+ * just for error messages and debug-dump filenames.
  *
  * The Filters button is a `<fire-chip role="button">`, not a real `<button>`, but its
  * explicit ARIA role makes it reachable the normal way via getByRole regardless.
  */
-export async function filterToAnrOnly(page: Page): Promise<void> {
+async function selectSingleEventTypeFilter(
+  page: Page,
+  label: string,
+  isTarget: (testId: string | null, index: number) => boolean,
+): Promise<void> {
   const filtersButton = page.getByRole("button", { name: /filtros|filters/i }).first();
   await filtersButton.waitFor({ state: "visible", timeout: 15_000 });
   await filtersButton.click();
@@ -160,35 +163,34 @@ export async function filterToAnrOnly(page: Page): Promise<void> {
     .then(() => true)
     .catch(() => false);
   if (!foundTab) {
-    const dump = await dumpDebugState(page, "anr-filter-event-type-tab-not-found");
+    const dump = await dumpDebugState(page, `${label}-filter-event-type-tab-not-found`);
     throw new Error(
-      `Couldn't find the "Event type" tab in the filters panel. Dumped to ${dump}.* to inspect.`,
+      `Couldn't find the "Event type" tab in the filters panel while selecting ${label}. ` +
+        `Dumped to ${dump}.* to inspect.`,
     );
   }
   await eventTypeTab.click();
 
-  const anrCheckbox = page.locator('mat-checkbox[data-test-id="facet-ANRs"]');
-  const foundAnr = await anrCheckbox
+  const checkboxes = page.locator('mat-checkbox[data-test-id^="facet-"]');
+  const found = await checkboxes
+    .first()
     .waitFor({ state: "visible", timeout: 10_000 })
     .then(() => true)
     .catch(() => false);
-  if (!foundAnr) {
-    const dump = await dumpDebugState(page, "anr-filter-checkbox-not-found");
-    throw new Error(`Couldn't find the "ANRs" filter checkbox. Dumped to ${dump}.* to inspect.`);
+  if (!found) {
+    const dump = await dumpDebugState(page, `${label}-filter-checkboxes-not-found`);
+    throw new Error(
+      `Couldn't find any event-type checkboxes while selecting ${label}. Dumped to ${dump}.* to inspect.`,
+    );
   }
 
-  if (!(await anrCheckbox.locator('input[type="checkbox"]').isChecked())) {
-    await anrCheckbox.click();
-  }
-
-  // Deselect every other event type so the result is ANRs only, not ANRs *plus* whatever
-  // was already checked.
-  const allCheckboxes = page.locator('mat-checkbox[data-test-id^="facet-"]');
-  const checkboxCount = await allCheckboxes.count();
-  for (let i = 0; i < checkboxCount; i++) {
-    const checkbox = allCheckboxes.nth(i);
-    if ((await checkbox.getAttribute("data-test-id")) === "facet-ANRs") continue;
-    if (await checkbox.locator('input[type="checkbox"]').isChecked()) {
+  const count = await checkboxes.count();
+  for (let i = 0; i < count; i++) {
+    const checkbox = checkboxes.nth(i);
+    const testId = await checkbox.getAttribute("data-test-id");
+    const shouldBeChecked = isTarget(testId, i);
+    const isChecked = await checkbox.locator('input[type="checkbox"]').isChecked();
+    if (shouldBeChecked !== isChecked) {
       await checkbox.click();
     }
   }
@@ -202,6 +204,62 @@ export async function filterToAnrOnly(page: Page): Promise<void> {
     .first()
     .waitFor({ state: "visible", timeout: 20_000 })
     .catch(() => {});
+
+  // The stat cards and the issues table load independently, and not necessarily at the
+  // same pace — the cards above can be ready while the table is still mid-refresh (old
+  // rows still present, about to be replaced by the new filter's rows, or briefly empty
+  // between the two). Waiting for the table's row count to settle, not just for "something"
+  // to be visible, is what actually confirms it's done — see waitForIssuesTableSettled.
+  await waitForIssuesTableSettled(page);
+}
+
+/**
+ * Polls the issues table's row count (and whether Crashlytics' own "no issues match this
+ * filter" empty state is showing) until two checks 700ms apart agree, or `timeoutMs` runs
+ * out. A single check of "is there a row, or is there the empty state" isn't enough here:
+ * right after applying a filter, the table can transiently show the *previous* filter's
+ * rows (about to be replaced), or nothing at all (between clearing old rows and rendering
+ * new ones) — either of which reads as "settled" to a one-shot check but isn't.
+ */
+async function waitForIssuesTableSettled(page: Page, timeoutMs = 20_000): Promise<void> {
+  const titles = page.locator('[data-test-id="titleWrapper"]');
+  const zeroState = page.locator(".c9s-issues-table-zero-state");
+  const start = Date.now();
+  let previous: { count: number; zero: boolean } | null = null;
+
+  while (Date.now() - start < timeoutMs) {
+    const count = await titles.count();
+    const zero = await zeroState.first().isVisible().catch(() => false);
+    const settled = count > 0 || zero;
+    if (previous && previous.count === count && previous.zero === zero && settled) {
+      return;
+    }
+    previous = { count, zero };
+    await new Promise((resolve) => setTimeout(resolve, 700));
+  }
+}
+
+/**
+ * Filters the dashboard to Crashes only. Explicit rather than relying on it already being
+ * the default: this crawler reuses a persistent browser profile, and Crashlytics may
+ * remember the last-applied filter (e.g. in localStorage) across runs — so after a run
+ * that filtered to ANRs, the next run isn't guaranteed to start back on Crashes.
+ *
+ * Picked by position (index 0) rather than by its label ("Falhas" on this project,
+ * unlike "ANRs" this is normal translated UI copy): Crashlytics' event types render in a
+ * fixed product order — Crashes, Non-fatals, ANRs — not sorted alphabetically per locale,
+ * so the position is the locale-safe part here, not the text.
+ */
+export async function filterToCrashesOnly(page: Page): Promise<void> {
+  await selectSingleEventTypeFilter(page, "crashes", (_testId, index) => index === 0);
+}
+
+/**
+ * Filters the dashboard to ANRs only. "ANRs" is Google's own acronym and Firebase doesn't
+ * translate it, so matching on it directly is locale-safe, unlike the other filter labels.
+ */
+export async function filterToAnrOnly(page: Page): Promise<void> {
+  await selectSingleEventTypeFilter(page, "anr", (testId) => testId === "facet-ANRs");
 }
 
 /**
@@ -249,10 +307,9 @@ export async function scrapeIssues(page: Page): Promise<CrashIssue[]> {
   // outcome (e.g. filtering to ANRs on a project with no ANRs), not a scrape failure, so
   // it's checked for below rather than treated the same as titles never showing up.
   const zeroState = page.locator(".c9s-issues-table-zero-state");
-  await Promise.race([
-    titles.first().waitFor({ state: "visible", timeout: 15_000 }).catch(() => {}),
-    zeroState.first().waitFor({ state: "visible", timeout: 15_000 }).catch(() => {}),
-  ]);
+  // Not just "does something show up" — the table can transiently show stale rows from a
+  // moment ago, or nothing at all, mid-refresh (see waitForIssuesTableSettled's doc).
+  await waitForIssuesTableSettled(page);
   const count = await titles.count();
   const issues: CrashIssue[] = [];
 
@@ -320,8 +377,14 @@ export async function openIssueByIndex(
   index: number,
   title: string,
 ): Promise<{ url: string; stackTrace: string | undefined }> {
-  const link = page.locator('[data-test-id="titleWrapper"]').nth(index).locator("xpath=ancestor::a[1]");
-  await link.click();
+  // The issues table can briefly re-render while this loop is running (a loading spinner,
+  // fire-spinner, blocks the click while it's up, and the row underneath can get detached
+  // and replaced mid-click) — re-resolving the locator fresh on every retry, rather than
+  // reusing one Locator handle, is what makes this survive a re-render instead of clicking
+  // a now-detached element.
+  await clickWithRetry(
+    () => page.locator('[data-test-id="titleWrapper"]').nth(index).locator("xpath=ancestor::a[1]"),
+  );
   await page.waitForLoadState("domcontentloaded");
 
   // "Stack trace" is a guess at the label text — this project's console is in Portuguese
@@ -399,4 +462,37 @@ function stripIconLigatureNoise(text: string): string {
 
 function sanitize(text: string): string {
   return text.replace(/[^a-z0-9]+/gi, "-").slice(0, 60);
+}
+
+/**
+ * Clicks whatever `getLocator()` currently resolves to, retrying on failure by calling
+ * `getLocator()` again each time — a fresh lookup, not a retry of the same handle, which
+ * is what makes this survive the element having been detached and replaced by a
+ * re-render between attempts (a stale `Locator` handle can't recover from that; querying
+ * the DOM again can).
+ *
+ * Uses `dispatchEvent("click")` rather than a real `.click()`: this table appears to
+ * live-refresh (a `fire-spinner` overlay shows up and rows get replaced) independently of
+ * anything this crawler does, and a real click's actionability checks — is it visible, is
+ * it stable, is nothing covering it — kept failing against that: either the spinner was
+ * genuinely on top (blocking it) or the row got detached mid-check. `force: true` would
+ * skip those checks too, but still clicks by screen coordinates, so it can end up clicking
+ * whatever *is* on top (the spinner) instead of the row. Dispatching the event directly on
+ * the element sidesteps both problems — it fires Angular's click handler on that exact
+ * node regardless of what's visually on top of it.
+ */
+async function clickWithRetry(getLocator: () => Locator, attempts = 6): Promise<void> {
+  let lastError: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const locator = getLocator();
+      await locator.waitFor({ state: "attached", timeout: 8_000 });
+      await locator.dispatchEvent("click");
+      return;
+    } catch (err) {
+      lastError = err;
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+    }
+  }
+  throw lastError;
 }

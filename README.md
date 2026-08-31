@@ -1,12 +1,12 @@
 # crawler-firebase
 
 Browser-automation crawler that logs into the Firebase console, opens a project's
-Crashlytics dashboard, filters it to **ANRs only** (via the dashboard's own "Filtros" →
-"Tipo de evento" picker, deselecting Crashes), and scrapes the crash-free users/sessions
-percentages plus the issues list for that filter (including each issue's stack trace).
-Results are written as a timestamped JSON file under `output/`. A project with no ANRs in
-the current time window is a normal, expected result — `issues` just comes back `[]`, no
-warning.
+Crashlytics dashboard, and scrapes it twice — once filtered to **Crashes only**, once
+filtered to **ANRs only** (via the dashboard's own "Filtros" → "Tipo de evento" picker) —
+each pass covering that filter's crash-free users/sessions percentages and full issues
+list (including each issue's stack trace). Results are written as a timestamped JSON file
+under `output/`. A project with no issues of a given type in the current time window is a
+normal, expected result for that flow — its `issues` just comes back `[]`, no warning.
 
 ## Output shape
 
@@ -14,14 +14,20 @@ warning.
 {
   "crawledAt": "2026-08-31T01:56:21.202Z",
   "projectId": "netchurros",
-  "crashFreeMetrics": { "<label as shown on the dashboard>": "<value as shown, e.g. \"99.8%\" or \"- - -\">" },
-  "issues": [ /* CrashIssue objects, shape below */ ]
+  "crashes": { "crashFreeMetrics": { "...": "..." }, "issues": [ /* CrashIssue[], shape below */ ] },
+  "anrs":    { "crashFreeMetrics": { "...": "..." }, "issues": [ /* CrashIssue[], shape below */ ] }
 }
 ```
 
-`crashFreeMetrics`'s keys are whatever label Crashlytics displays (e.g. Portuguese
-"Usuários que não tiveram falhas" on this project) — see `scrapeCrashFreeMetrics` in
-`src/crashlytics.ts` for why the keys are the raw label rather than a fixed one.
+`crashes` and `anrs` are independent scrapes of the same dashboard under each filter —
+`filterToCrashesOnly`/`filterToAnrOnly` in `src/crashlytics.ts` are what switch between
+them, and `scrapeCurrentFilter` in `src/index.ts` is what runs one full scrape for
+whichever filter is currently applied.
+
+Each flow's `crashFreeMetrics` keys are whatever label Crashlytics displays for that
+filter (e.g. Portuguese "Usuários que não tiveram falhas" on this project) — see
+`scrapeCrashFreeMetrics` in `src/crashlytics.ts` for why the keys are the raw label rather
+than a fixed one.
 
 Each entry in `issues` is a `CrashIssue` (full field docs on the type itself, in
 `src/crashlytics.ts`):
@@ -102,7 +108,7 @@ step (or share it) so the corresponding selector in `src/crashlytics.ts` or
 - `src/browser.ts` — launches Chromium with a persistent profile (keeps the login session).
 - `src/login.ts` — detects whether Google login is needed and waits for it.
 - `src/projectSelect.ts` — lists/prompts for which Firebase project to crawl.
-- `src/crashlytics.ts` — clicks into Crashlytics, applies the ANR filter, and scrapes metrics/issues/stack traces.
+- `src/crashlytics.ts` — clicks into Crashlytics, switches between the Crashes/ANRs filter, and scrapes metrics/issues/stack traces.
 - `src/debug.ts` — dumps page state whenever a selector doesn't find what it expects.
 - `src/state.ts` — persists the chosen project id between runs.
 - `src/index.ts` — orchestrates the above and writes the output JSON.
