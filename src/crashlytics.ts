@@ -1,4 +1,4 @@
-import type { Page } from "playwright";
+import type { Locator, Page } from "playwright";
 import { dumpDebugState } from "./debug.js";
 
 export interface CrashFreeMetrics {
@@ -7,11 +7,48 @@ export interface CrashFreeMetrics {
 
 export interface CrashIssue {
   title: string;
+  subtitle: string | null;
   url: string | null;
-  /** Raw text of the row's table cell (subtitle, event/user counts, etc.) — kept whole
-   *  because Crashlytics doesn't label those cells with anything selector-friendly. */
+  eventCount: string | null;
+  userCount: string | null;
+  versionRange: string | null;
+  /**
+   * Best-effort only: the Trends column is a canvas-rendered sparkline chart, not text, so
+   * there's no way to read its actual per-day series. This is just the value range pulled
+   * out of the chart's screen-reader description (e.g. "0 to 2"), when Firebase provides one.
+   */
+  trendRange: string | null;
+  /** Raw text of the row's title cell (crash type, package, blamed file, tags, etc.) —
+   *  kept whole because Crashlytics doesn't label most of it with anything selector-friendly. */
   rowText: string;
   stackTrace?: string;
+}
+
+/** Reads one column's cell text for a row, by the table's own (locale-independent) column
+ *  class name — Angular Material emits `cdk-column-<field>` from the English field name
+ *  the table is configured with, regardless of what the console's display language is. */
+async function readColumnCell(row: Locator, columnClass: string): Promise<string | null> {
+  const text = await row
+    .locator(`td.${columnClass}`)
+    .textContent()
+    .catch(() => null);
+  return text?.replace(/\s+/g, " ").trim() || null;
+}
+
+/**
+ * Pulls "0–2" out of the trends chart's y-axis screen-reader description, if present.
+ * Scoped to `<ac-y-axis>` specifically (not the whole trends cell) because the cell's
+ * other screen-reader text — the x-axis's date-range sentence — has numbers of its own
+ * (day/month/year) that would otherwise get matched first.
+ */
+async function readTrendRange(row: Locator): Promise<string | null> {
+  const axisText = await row
+    .locator("td.cdk-column-trends ac-y-axis")
+    .first()
+    .textContent()
+    .catch(() => null);
+  const match = axisText?.match(/(-?[\d.,]+)\D+(-?[\d.,]+)/);
+  return match ? `${match[1]}–${match[2]}` : null;
 }
 
 /**
@@ -111,14 +148,41 @@ export async function scrapeIssues(page: Page): Promise<CrashIssue[]> {
   const issues: CrashIssue[] = [];
 
   for (let i = 0; i < count; i++) {
-    const title = (await titles.nth(i).innerText().catch(() => "")).trim();
-    // Title + subtitle + event/user counts all live in the same table cell — read the
-    // whole cell via textContent (not innerText) since the event/user-count summary is
-    // CSS-hidden at desktop widths and innerText returns "" for hidden nodes.
-    const cell = titles.nth(i).locator("xpath=ancestor::td[1]");
+    const titleEl = titles.nth(i);
+    const title = (await titleEl.innerText().catch(() => "")).trim();
+
+    // Title + subtitle live in the same <a>; event/user/version/trend are separate <td>
+    // cells in the same <tr> — go up to the row once and read everything from there.
+    const cell = titleEl.locator("xpath=ancestor::td[1]");
+    const row = titleEl.locator("xpath=ancestor::tr[1]");
+
+    const subtitle =
+      (await cell
+        .locator('[data-test-id="subtitleWrapper"]')
+        .innerText()
+        .catch(() => "")
+      ).trim() || null;
+
+    // textContent (not innerText) here: the mobile event/user summary text inside this
+    // cell is CSS-hidden at desktop widths, and innerText returns "" for hidden nodes.
     const rowText = (await cell.textContent().catch(() => ""))?.replace(/\s+/g, " ").trim() ?? "";
+
+    const eventCount = await readColumnCell(row, "cdk-column-eventCount");
+    const userCount = await readColumnCell(row, "cdk-column-userCount");
+    const versionRange = await readColumnCell(row, "cdk-column-versions");
+    const trendRange = await readTrendRange(row);
+
     if (!title && !rowText) continue;
-    issues.push({ title: title || rowText, url: null, rowText });
+    issues.push({
+      title: title || rowText,
+      subtitle,
+      url: null,
+      eventCount,
+      userCount,
+      versionRange,
+      trendRange,
+      rowText,
+    });
   }
 
   if (issues.length === 0) {
@@ -162,8 +226,33 @@ export async function openIssueByIndex(
     const dump = await dumpDebugState(page, `stack-trace-not-found_${sanitize(title)}`);
     console.warn(`Warning: no stack trace section found for issue "${title}". Dumped to ${dump}.*`);
   } else {
-    const section = heading.locator("xpath=ancestor::*[self::div or self::section][1]");
-    stackTrace = (await section.innerText().catch(() => undefined))?.trim();
+    // "Stack trace" is a *tab label* (in a session-card's mat-tab-group), not a heading
+    // over the trace itself — the trace lives in a separate panel `<mat-tab-body>` that
+    // aria-controls points to, and that panel's content loads asynchronously (it's still
+    // an empty placeholder right when the tab label first appears).
+    const tab = heading.locator("xpath=ancestor::div[@role='tab'][1]");
+    const panelId = await tab.getAttribute("aria-controls").catch(() => null);
+
+    if (!panelId) {
+      const dump = await dumpDebugState(page, `stack-trace-not-found_${sanitize(title)}`);
+      console.warn(
+        `Warning: found a "Stack trace" tab for issue "${title}" but no aria-controls ` +
+          `pointing at its content panel. Dumped to ${dump}.*`,
+      );
+    } else {
+      await page
+        .waitForFunction(
+          (id) => {
+            const el = document.getElementById(id);
+            return !!el && el.innerText.trim().length > 0;
+          },
+          panelId,
+          { timeout: 20_000 },
+        )
+        .catch(() => {});
+      const rawText = (await page.locator(`#${panelId}`).innerText().catch(() => undefined))?.trim();
+      stackTrace = rawText && stripIconLigatureNoise(rawText);
+    }
   }
 
   await page.goBack({ waitUntil: "domcontentloaded" }).catch(() => {});
@@ -176,6 +265,21 @@ export async function openIssueByIndex(
     .catch(() => {});
 
   return { url, stackTrace };
+}
+
+/**
+ * The stack trace panel is a Material icon font (expand/collapse chevrons, a copy button,
+ * etc.) sitting right alongside the actual trace text — those icons render as literal text
+ * nodes containing their ligature name (e.g. "keyboard_arrow_up"), which innerText can't
+ * tell apart from real content. Drops lines that are just a bare icon token: real stack
+ * trace lines always have punctuation (a paren, colon, or dot) an icon name never does.
+ */
+function stripIconLigatureNoise(text: string): string {
+  return text
+    .split("\n")
+    .filter((line) => !/^[a-z][a-z_]*$/.test(line.trim()))
+    .join("\n")
+    .trim();
 }
 
 function sanitize(text: string): string {
