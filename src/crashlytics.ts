@@ -11,6 +11,11 @@ export interface CrashIssue {
   /** The exception type shown under the title, e.g. "java.lang.Exception". `null` if the
    *  row had no subtitle element (rare, but the DOM doesn't guarantee one). */
   subtitle: string | null;
+  /** Crashlytics' own opaque issue ID (e.g. "6e970548d8d5f26fc68971f9ecd4ffb4") — stable
+   *  across crawls, so it's what to key on when diffing two reports or deduping the same
+   *  issue seen under different filters. Parsed out of `url`'s `/issues/<id>` segment, so
+   *  it has the same "`null` until visited" caveat as `url` below — see that field's doc. */
+  id: string | null;
   /** Deep link straight to this issue's detail page. `null` until `openIssueByIndex` has
    *  actually visited it — issue rows have no real href to read this from up front (see
    *  `scrapeIssues`'s doc comment), so this is only filled in as a side effect of scraping
@@ -343,6 +348,7 @@ export async function scrapeIssues(page: Page): Promise<CrashIssue[]> {
     issues.push({
       title: title || rowText,
       subtitle,
+      id: null,
       url: null,
       eventCount,
       userCount,
@@ -376,7 +382,7 @@ export async function openIssueByIndex(
   page: Page,
   index: number,
   title: string,
-): Promise<{ url: string; stackTrace: string | undefined }> {
+): Promise<{ id: string | null; url: string; stackTrace: string | undefined }> {
   // The issues table can briefly re-render while this loop is running (a loading spinner,
   // fire-spinner, blocks the click while it's up, and the row underneath can get detached
   // and replaced mid-click) — re-resolving the locator fresh on every retry, rather than
@@ -398,6 +404,7 @@ export async function openIssueByIndex(
     .catch(() => false);
 
   const url = page.url();
+  const id = extractIssueId(url);
   let stackTrace: string | undefined;
 
   if (!found) {
@@ -442,7 +449,14 @@ export async function openIssueByIndex(
     .waitFor({ state: "visible", timeout: 15_000 })
     .catch(() => {});
 
-  return { url, stackTrace };
+  return { id, url, stackTrace };
+}
+
+/** Pulls Crashlytics' own issue ID out of its detail URL's `/issues/<id>` segment
+ *  (e.g. "6e970548d8d5f26fc68971f9ecd4ffb4" from ".../issues/6e970548d8d5f26fc68971f9ecd4ffb4?time=7d&types=crash"). */
+function extractIssueId(url: string): string | null {
+  const match = url.match(/\/issues\/([^/?#]+)/);
+  return match ? match[1] : null;
 }
 
 /**

@@ -36,6 +36,7 @@ Each entry in `issues` is a `CrashIssue` (full field docs on the type itself, in
 | --- | --- | --- |
 | `title` | `string` | Issue title, usually `<Class>.<method>` |
 | `subtitle` | `string \| null` | Exception type shown under the title |
+| `id` | `string \| null` | Crashlytics' own opaque issue ID (e.g. `"6e970548d8d5f26fc68971f9ecd4ffb4"`) — stable across crawls, so it's the field to key on when diffing two reports. Same `null`-until-visited caveat as `url` |
 | `url` | `string \| null` | Deep link to the issue's detail page — `null` until it's been visited |
 | `eventCount` | `string \| null` | Crash event count in the dashboard's current time window, as displayed (unparsed) |
 | `userCount` | `string \| null` | Distinct affected users, same caveats as `eventCount` |

@@ -3,15 +3,16 @@ import { BROWSER_PROFILE_DIR } from "./config.js";
 
 /**
  * Launches Chromium with a persistent, on-disk profile. Google's session cookies live in
- * that profile dir, so a login done once (interactively, on a first run) is reused by
- * every later run instead of being redone. Runs headed on purpose: headless Chromium gets
- * flagged and blocked by Google's login flow, and a human needs to be able to see the
- * window to clear a 2FA prompt the first time.
+ * that profile dir, so a login done once (interactively, headed — see ensureLoggedIn) is
+ * reused by every later run instead of being redone. Headless here relies on that: a
+ * fresh/expired session still needs a headed run to clear login and any 2FA prompt (set
+ * `headless: false` below to see the window for that), but once a session is saved,
+ * headless is fine for everyday unattended crawls.
  */
 export async function launchBrowser(): Promise<BrowserContext> {
   return chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
     channel: 'chrome',
-    headless: false,
+    headless: true,
     viewport: { width: 1440, height: 900 },
     args: [
         // '--disable-blink-features=AutomationControlled',

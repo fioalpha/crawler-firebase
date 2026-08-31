@@ -33,7 +33,8 @@ async function scrapeCurrentFilter(page: Page, label: string) {
   // one is visited by index on the live page rather than by a saved URL — see
   // openIssueByIndex for why, and why this only works against this same, unmodified list.
   for (let i = 0; i < issues.length; i++) {
-    const { url, stackTrace } = await openIssueByIndex(page, i, issues[i].title);
+    const { id, url, stackTrace } = await openIssueByIndex(page, i, issues[i].title);
+    issues[i].id = id;
     issues[i].url = url;
     issues[i].stackTrace = stackTrace;
   }
