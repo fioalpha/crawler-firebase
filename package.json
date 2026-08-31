@@ -1,0 +1,22 @@
+{
+  "name": "crawler-firebase",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser-automation crawler that logs into Firebase console, opens a project's Crashlytics dashboard, and scrapes crash-free metrics, issues, and stack traces.",
+  "scripts": {
+    "crawl": "tsx src/index.ts",
+    "login": "tsx src/index.ts --login-only",
+    "reset-project": "tsx src/index.ts --reset-project"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0",
+    "prompts": "^2.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "@types/prompts": "^2.4.9",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
